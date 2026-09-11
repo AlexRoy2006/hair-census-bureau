@@ -38,31 +38,59 @@ export interface PipelineProgress {
   stage: PipelineStage;
   stageLabel: string;
   progressPercent: number;
-  stepNumber: number; // Single source of truth for step (1, 2, or 3)
+  stepNumber: number;
   analysisId: string;
   elapsedMs: number;
   error?: string | null;
 }
 
+/**
+ * STAGE_CONFIG is the single source of truth for progress percentages and labels.
+ * The UI derives its display directly from this — no disconnected decorative list.
+ */
 export const STAGE_CONFIG: Record<
   PipelineStage,
   { label: string; percent: number; step: number }
 > = {
-  IDLE:               { label: "IDLE",                              percent: 0,   step: 1 },
-  PREPARING:          { label: "INITIALIZING CENSUS...",            percent: 10,  step: 1 },
-  VALIDATING_QUALITY: { label: "VALIDATING IMAGE...",               percent: 20,  step: 1 },
-  LOADING_MODEL:      { label: "LOADING SEGMENTATION MODEL...",     percent: 35,  step: 2 },
-  RUNNING_INFERENCE:  { label: "IDENTIFYING HAIR...",               percent: 55,  step: 2 },
-  PROCESSING_MASK:    { label: "ANALYZING FOLLICULAR DISTRIBUTION...", percent: 70, step: 2 },
-  EXTRACTING_HEAD:    { label: "LOCATING HEAD...",                  percent: 80,  step: 3 },
-  CALCULATING_METRICS:{ label: "ESTIMATING HAIR POPULATION...",     percent: 90,  step: 3 },
-  FINALIZING:         { label: "FINALIZING CENSUS...",              percent: 98,  step: 3 },
-  COMPLETE:           { label: "ANALYSIS COMPLETE",                 percent: 100, step: 3 },
-  ERROR:              { label: "CENSUS INTERRUPTED",                percent: 0,   step: 3 },
+  IDLE:                { label: "IDLE",                               percent: 0,   step: 1 },
+  PREPARING:           { label: "INITIALIZING CENSUS...",             percent: 10,  step: 1 },
+  VALIDATING_QUALITY:  { label: "VALIDATING IMAGE QUALITY...",        percent: 20,  step: 1 },
+  LOADING_MODEL:       { label: "LOADING SEGMENTATION MODEL...",      percent: 35,  step: 2 },
+  RUNNING_INFERENCE:   { label: "IDENTIFYING HAIR...",                percent: 55,  step: 2 },
+  PROCESSING_MASK:     { label: "ANALYZING FOLLICULAR DISTRIBUTION...", percent: 70, step: 2 },
+  EXTRACTING_HEAD:     { label: "LOCATING HEAD...",                   percent: 80,  step: 3 },
+  CALCULATING_METRICS: { label: "ESTIMATING HAIR POPULATION...",      percent: 90,  step: 3 },
+  FINALIZING:          { label: "FINALIZING CENSUS...",               percent: 98,  step: 3 },
+  COMPLETE:            { label: "ANALYSIS COMPLETE",                  percent: 100, step: 3 },
+  ERROR:               { label: "CENSUS INTERRUPTED",                 percent: 0,   step: 3 },
 };
 
-// Global Concurrency Lock & Active Request Tracking
-let isAnalysisInProgress = false;
+/**
+ * Ordered list of real pipeline stages in execution order (excludes IDLE/COMPLETE/ERROR).
+ * Used by the UI to render a live checklist that maps 1:1 with actual pipeline stages.
+ */
+export const PIPELINE_STAGE_ORDER: PipelineStage[] = [
+  "PREPARING",
+  "VALIDATING_QUALITY",
+  "LOADING_MODEL",
+  "RUNNING_INFERENCE",
+  "PROCESSING_MASK",
+  "EXTRACTING_HEAD",
+  "CALCULATING_METRICS",
+  "FINALIZING",
+];
+
+// ─── Module-level state ───────────────────────────────────────────────────────
+// IMPORTANT: We do NOT use a boolean isAnalysisInProgress lock here.
+// A boolean lock persists across component unmount/remount and can cause
+// a freshly mounted component's analyzeHair() call to be rejected as a
+// "duplicate" even though the previous run was already aborted and the
+// component has been fully unmounted and remounted.
+//
+// Instead, we use activeAnalysisId: each run gets a unique ID. Any
+// in-flight async callbacks from a stale run detect the mismatch and
+// bail out WITHOUT touching React state owned by the new run.
+// ─────────────────────────────────────────────────────────────────────────────
 let activeAnalysisId: string | null = null;
 
 let activeCapturedImage: PreparedImage | Blob | string | null = null;
@@ -130,9 +158,8 @@ function updatePipelineStage(
   };
 
   console.log(
-    `[MUDI PIPELINE] Stage: ${stage} (${config.percent}%) | Step 0${config.step} | ID: ${analysisId} | Elapsed: ${elapsedMs}ms${
-      customLabel ? ` | Label: ${customLabel}` : ""
-    }`,
+    `[MUDI PIPELINE] ${analysisId} | Stage: ${stage} (${config.percent}%) | ` +
+    `Elapsed: ${elapsedMs}ms${customLabel ? ` | "${customLabel}"` : ""}`,
   );
 
   progressListeners.forEach((fn) => fn(currentProgressState));
@@ -170,11 +197,11 @@ function validateCensusResult(result: any): boolean {
 
 /**
  * Wrap a synchronous function in a Promise so it can be used with withTimeout.
- * This prevents a slow synchronous CPU loop from blocking the timeout race.
+ * The setTimeout(0) allows the JS event loop to process any pending microtasks
+ * (including abort signal checks) before the synchronous work begins.
  */
 function runAsync<T>(fn: () => T): Promise<T> {
   return new Promise((resolve, reject) => {
-    // Use a microtask so any pending state updates flush before execution
     setTimeout(() => {
       try {
         resolve(fn());
@@ -189,13 +216,19 @@ function runAsync<T>(fn: () => T): Promise<T> {
  * MAIN REAL COMPUTER VISION ANALYSIS PIPELINE (Fail-Safe & State-Machine Driven)
  * -----------------------------------------------------------------------------
  * Execution Sequence:
- *   1. Image Preparation            (withTimeout 8s)
+ *   1. Image Preparation            (withTimeout 8s + internal decode timeout 6s)
  *   2. Quality Validation           (sync, fast)
- *   3. Model Loading + Inference    (withTimeout 15s total — local CV: ~2s)
+ *   3. Model Loading + Inference    (withTimeout 15s — local CV engine: ~1-3s)
  *   4. Mask Cleanup                 (sync, fast at 256×256)
- *   5. Head Region Extraction       (withTimeout 5s — sync at 256×256)
- *   6. Metrics & Population Estimate
+ *   5. Head Region Extraction       (withTimeout 5s)
+ *   6. Metrics & Population Estimate (sync, fast)
  *   7. Result Validation & Completion
+ *
+ * CONCURRENCY MODEL:
+ * We cancel any in-flight run by generating a new analysisId. Old async callbacks
+ * compare their captured analysisId against the module-level activeAnalysisId and
+ * bail out without touching state if they don't match. This is safe across
+ * component remounts, React StrictMode double-invocation, and TanStack preloading.
  */
 export async function analyzeHair(
   image?: PreparedImage | Blob | string | null,
@@ -204,27 +237,34 @@ export async function analyzeHair(
     onProgress?: (progress: PipelineProgress) => void;
   },
 ): Promise<CensusResult> {
-  // Prevent concurrent executions
-  if (isAnalysisInProgress) {
-    console.warn("[MUDI PIPELINE] Analysis already in progress. Rejecting duplicate call.");
-    throw new Error("Analysis is already running.");
-  }
-
-  isAnalysisInProgress = true;
-
-  const analysisId = `MU-${Date.now().toString(36).toUpperCase()}`;
+  // Generate a unique ID for this run. Setting activeAnalysisId to this value
+  // atomically cancels any still-running callbacks from a previous run — they
+  // will detect the mismatch and stop without touching UI state.
+  const analysisId = `MU-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
   activeAnalysisId = analysisId;
   const startTime = Date.now();
 
-  console.log(`[MUDI PIPELINE] Analysis started (ID: ${analysisId})`);
+  console.log(`[MUDI PIPELINE] ▶ Analysis started (ID: ${analysisId})`);
 
   const targetImageInput = image ?? activeCapturedImage;
 
-  // Helper: emit progress, checking for abort/stale analysis
-  const emit = (stage: PipelineStage, customLabel?: string) => {
-    if (options?.signal?.aborted || activeAnalysisId !== analysisId) return;
+  /**
+   * emit() — update pipeline stage and notify the UI.
+   * Returns false (and skips update) if this run has been superseded by a
+   * newer run or if the AbortSignal has fired.
+   */
+  const emit = (stage: PipelineStage, customLabel?: string): boolean => {
+    if (options?.signal?.aborted) {
+      console.log(`[MUDI PIPELINE] ${analysisId} | emit(${stage}) skipped — signal aborted`);
+      return false;
+    }
+    if (activeAnalysisId !== analysisId) {
+      console.log(`[MUDI PIPELINE] ${analysisId} | emit(${stage}) skipped — superseded by ${activeAnalysisId}`);
+      return false;
+    }
     updatePipelineStage(stage, analysisId, startTime, customLabel);
     options?.onProgress?.(currentProgressState);
+    return true;
   };
 
   try {
@@ -233,14 +273,15 @@ export async function analyzeHair(
     // -------------------------------------------------------------------------
     emit("PREPARING");
 
-    console.log("[MUDI PIPELINE] Image preparation started");
+    console.log(`[MUDI PIPELINE] ${analysisId} | Image preparation started`);
     const prepared = await withTimeout(
       prepareImage(targetImageInput),
       8000,
-      "Image preparation failed",
+      "Image preparation failed — the captured image could not be loaded",
     );
+    // Update the stored image to the normalised PreparedImage for downstream use
     setCapturedImage(prepared);
-    console.log(`[MUDI PIPELINE] Image preparation complete (${prepared.width}x${prepared.height})`);
+    console.log(`[MUDI PIPELINE] ${analysisId} | Image preparation complete (${prepared.width}x${prepared.height})`);
 
     if (options?.signal?.aborted || activeAnalysisId !== analysisId) {
       throw new DOMException("Census aborted", "AbortError");
@@ -251,9 +292,9 @@ export async function analyzeHair(
     // -------------------------------------------------------------------------
     emit("VALIDATING_QUALITY");
 
-    console.log("[MUDI PIPELINE] Quality validation started");
+    console.log(`[MUDI PIPELINE] ${analysisId} | Quality validation started`);
     const qualityResult: ImageQualityResult = validateImageQuality(prepared.canvas);
-    console.log(`[MUDI PIPELINE] Quality validation complete (Score: ${qualityResult.score})`);
+    console.log(`[MUDI PIPELINE] ${analysisId} | Quality validation complete (Score: ${qualityResult.score})`);
 
     if (!qualityResult.valid) {
       throw new Error("Image quality too low for census analysis. Please capture in brighter lighting.");
@@ -264,18 +305,16 @@ export async function analyzeHair(
     }
 
     // -------------------------------------------------------------------------
-    // STAGE 3: LOADING SEGMENTATION MODEL
+    // STAGE 3: LOADING SEGMENTATION MODEL + RUNNING INFERENCE
     // -------------------------------------------------------------------------
     emit("LOADING_MODEL");
-
-    console.log("[MUDI PIPELINE] Model loading started");
-    console.log("[MUDI HEAD DEBUG] Starting segmentation model load + inference");
+    console.log(`[MUDI PIPELINE] ${analysisId} | Model load + inference started`);
 
     const segResult: HairSegmentationResult = await withTimeout(
       runHairSegmentation(prepared.canvas, (p: any) => {
+        // Bail out immediately if this run has been superseded or aborted
         if (options?.signal?.aborted || activeAnalysisId !== analysisId) return;
 
-        // Once model is loaded and inference begins, advance to RUNNING_INFERENCE stage
         if (p.status === "ready" || p.status === "running") {
           emit("RUNNING_INFERENCE");
           return;
@@ -294,18 +333,24 @@ export async function analyzeHair(
           customLabel = `LOADING MODEL (${fn} ${Math.round(pct)}%)`;
         }
 
-        updatePipelineStage("LOADING_MODEL", analysisId, startTime, customLabel);
-        options?.onProgress?.(currentProgressState);
+        // Only update if still the active run
+        if (activeAnalysisId === analysisId && !options?.signal?.aborted) {
+          updatePipelineStage("LOADING_MODEL", analysisId, startTime, customLabel);
+          options?.onProgress?.(currentProgressState);
+        }
       }),
-      // Tightened from 25s → 15s. Local CV engine has its own internal 5s timeout.
       15000,
       "Segmentation model timed out. Please try again.",
     );
 
-    console.log(`[MUDI HEAD DEBUG] Segmentation complete — output: ${segResult.width}x${segResult.height}, hair pixels: ${segResult.hairPixelCount}`);
-    console.log(`[MUDI HEAD DEBUG] allClassMasks count: ${segResult.allClassMasks.length}`);
+    console.log(
+      `[MUDI PIPELINE] ${analysisId} | Segmentation complete — ` +
+      `${segResult.width}x${segResult.height}, hair pixels: ${segResult.hairPixelCount}, ` +
+      `classes: ${segResult.allClassMasks.length}`,
+    );
 
-    // Advance to RUNNING_INFERENCE if model progress callback never fired "ready"
+    // Ensure we are at RUNNING_INFERENCE before moving on (in case the progress
+    // callback never fired a "ready" event for the local CV engine)
     emit("RUNNING_INFERENCE");
 
     if (options?.signal?.aborted || activeAnalysisId !== analysisId) {
@@ -317,30 +362,22 @@ export async function analyzeHair(
     // -------------------------------------------------------------------------
     emit("PROCESSING_MASK");
 
-    console.log("[MUDI PIPELINE] Mask extraction & cleanup started");
-    console.log(`[MUDI HEAD DEBUG] Mask dimensions for cleanup: ${segResult.width}x${segResult.height}`);
-
     const cleanedMaskOutput: CleanMaskResult = cleanHairMask(
       segResult.hairMask,
       segResult.width,
       segResult.height,
     );
-    console.log(`[MUDI PIPELINE] Mask cleanup complete — clean: ${cleanedMaskOutput.cleanPixelCount}, noise removed: ${cleanedMaskOutput.noisePixelsRemoved}`);
+    console.log(
+      `[MUDI PIPELINE] ${analysisId} | Mask cleanup — ` +
+      `clean px: ${cleanedMaskOutput.cleanPixelCount}, noise removed: ${cleanedMaskOutput.noisePixelsRemoved}`,
+    );
 
     // -------------------------------------------------------------------------
     // STAGE 5: EXTRACTING HEAD REGION
     // -------------------------------------------------------------------------
     emit("EXTRACTING_HEAD");
+    console.log(`[MUDI PIPELINE] ${analysisId} | Head region extraction started`);
 
-    console.log("[MUDI PIPELINE] Head region calculation started");
-    console.log(`[MUDI HEAD DEBUG] Input image: ${prepared.width}x${prepared.height}`);
-    console.log(`[MUDI HEAD DEBUG] Segmentation available: ${segResult.allClassMasks.length > 0}`);
-    console.log(`[MUDI HEAD DEBUG] Segmentation output type: allClassMasks[${segResult.allClassMasks.length}] at ${segResult.width}x${segResult.height}`);
-    console.log(`[MUDI HEAD DEBUG] Class map available: true`);
-    console.log(`[MUDI HEAD DEBUG] Starting head-region calculation at dimensions: ${segResult.width}x${segResult.height}`);
-
-    // Wrap in runAsync + withTimeout: extractHeadRegion is synchronous but may be
-    // slow on very large dimensions — this ensures the timeout race can fire.
     const headRegion: HeadRegionOutput = await withTimeout(
       runAsync(() => extractHeadRegion(
         segResult.allClassMasks,
@@ -351,11 +388,11 @@ export async function analyzeHair(
       "Head region calculation timed out. Please center your head and try again.",
     );
 
-    console.log(`[MUDI HEAD DEBUG] Head-region calculation complete`);
-    console.log(`[MUDI HEAD DEBUG] Head pixels: ${headRegion.totalHeadPixels}`);
-    console.log(`[MUDI HEAD DEBUG] Head pixel ratio: ${(headRegion.headPixelRatio * 100).toFixed(2)}%`);
-    console.log(`[MUDI HEAD DEBUG] hasUsableHead: ${headRegion.hasUsableHead}`);
-    console.log("[MUDI HEAD DEBUG] Head detection complete");
+    console.log(
+      `[MUDI PIPELINE] ${analysisId} | Head region — ` +
+      `pixels: ${headRegion.totalHeadPixels}, ratio: ${(headRegion.headPixelRatio * 100).toFixed(1)}%, ` +
+      `usable: ${headRegion.hasUsableHead}`,
+    );
 
     if (!headRegion.hasUsableHead) {
       throw new Error(
@@ -372,7 +409,6 @@ export async function analyzeHair(
     // -------------------------------------------------------------------------
     emit("CALCULATING_METRICS");
 
-    console.log("[MUDI PIPELINE] Metrics calculation started");
     const metrics = calculateHairMetrics(cleanedMaskOutput.cleanedMask, headRegion);
     const populationEstimate = estimateHairPopulation(metrics.hairCoverage, qualityResult.score);
     const classification = classifyHairDensity(metrics.hairCoverage);
@@ -383,7 +419,7 @@ export async function analyzeHair(
       headRegion.headPixelRatio,
       cleanedMaskOutput.maskQualityScore,
     );
-    console.log(`[MUDI PIPELINE] Metrics complete — Coverage: ${metrics.hairCoverage}%, Classification: ${classification}`);
+    console.log(`[MUDI PIPELINE] ${analysisId} | Metrics — coverage: ${metrics.hairCoverage}%, class: ${classification}`);
 
     // -------------------------------------------------------------------------
     // STAGE 7: FINALIZING CENSUS RESULT
@@ -426,9 +462,8 @@ export async function analyzeHair(
       },
     };
 
-    // Validate result before completion
     if (!validateCensusResult(result)) {
-      throw new Error("Generated census result contains invalid data");
+      throw new Error("Generated census result contains invalid data — please retake the photo");
     }
 
     if (options?.signal?.aborted || activeAnalysisId !== analysisId) {
@@ -437,25 +472,33 @@ export async function analyzeHair(
 
     emit("COMPLETE");
 
-    console.log(`[MUDI PIPELINE] Analysis complete in ${Date.now() - startTime}ms`);
+    const totalMs = Date.now() - startTime;
+    console.log(`[MUDI PIPELINE] ✓ Analysis ${analysisId} complete in ${totalMs}ms`);
     setLatestResult(result);
     return result;
+
   } catch (err: any) {
     if (err?.name === "AbortError") {
-      console.log(`[MUDI PIPELINE] Analysis ${analysisId} aborted cleanly`);
-      updatePipelineStage("IDLE", analysisId, startTime, "IDLE");
-      throw err;
+      // The run was deliberately cancelled (component unmount, navigation away,
+      // or a newer run superseded this one). Do NOT update any UI state here —
+      // the component that owns this signal is either gone or has already started
+      // a fresh run with a clean state. Logging only.
+      console.log(`[MUDI PIPELINE] ✕ Analysis ${analysisId} aborted after ${Date.now() - startTime}ms`);
+      throw err; // Re-throw so the caller's catch block can detect AbortError
     }
 
     const errMessage =
       err?.message || "Unable to analyze this image. Please try another image with better lighting.";
-    console.error(`[MUDI PIPELINE] Analysis ${analysisId} FAILED:`, errMessage);
+    console.error(`[MUDI PIPELINE] ✕ Analysis ${analysisId} FAILED (${Date.now() - startTime}ms):`, errMessage);
 
-    updatePipelineStage("ERROR", analysisId, startTime, "CENSUS INTERRUPTED", errMessage);
-    options?.onProgress?.(currentProgressState);
+    // Only update UI state if this run is still the active one.
+    // If it has been superseded, the new run is already running and we must not
+    // overwrite its state with an error from a stale operation.
+    if (activeAnalysisId === analysisId && !options?.signal?.aborted) {
+      updatePipelineStage("ERROR", analysisId, startTime, "CENSUS INTERRUPTED", errMessage);
+      options?.onProgress?.(currentProgressState);
+    }
+
     throw new Error(errMessage);
-  } finally {
-    // Release Concurrency Lock — ALWAYS runs even on abort/error
-    isAnalysisInProgress = false;
   }
 }

@@ -9,6 +9,8 @@ import { ANALYSIS_TELEMETRY } from "@/data/census";
 import {
   analyzeHair,
   getCapturedImage,
+  STAGE_CONFIG,
+  PIPELINE_STAGE_ORDER,
   type PipelineProgress,
   type PipelineStage,
 } from "@/services/hairAnalysis";
@@ -42,15 +44,34 @@ function AnalysisPage() {
   const [lang] = useLanguage();
   const t = CENSUS_MESSAGES[lang];
 
-  // Use PipelineStage (uppercase) — the single source of truth from hairAnalysis.ts
   const [pipelineStage, setPipelineStage] = useState<PipelineStage>("PREPARING");
-  const [stageTextLabel, setStageTextLabel] = useState<string>("INITIALIZING CENSUS...");
+  const [stageTextLabel, setStageTextLabel] = useState<string>(STAGE_CONFIG["PREPARING"].label);
   const [progressPercent, setProgressPercent] = useState(0);
   const [pixels, setPixels] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  /**
+   * isRunningRef — tracks whether runPipeline is currently executing.
+   *
+   * IMPORTANT: This ref is reset to false in the `finally` block of every
+   * runPipeline invocation, INCLUDING the abort path. It is NOT used as a
+   * "gate" that rejects concurrent calls — instead, each new call to
+   * runPipeline gets a fresh AbortController and generates a fresh analysisId
+   * inside analyzeHair, which automatically supersedes any in-flight run.
+   *
+   * The ref is only used by the "Retry" button to prevent the user from
+   * accidentally double-clicking and queuing two concurrent analyses.
+   */
   const isRunningRef = useRef(false);
+
+  /**
+   * abortControllerRef — holds the AbortController for the current run.
+   * When runPipeline is called again (retry), the previous controller is
+   * aborted first so the old run's callbacks stop updating state.
+   */
+  const abortControllerRef = useRef<AbortController | null>(null);
+
   const capturedImage = getCapturedImage();
   const previewUrl =
     capturedImage && typeof capturedImage === "object" && "dataUrl" in capturedImage
@@ -62,68 +83,115 @@ function AnalysisPage() {
   const isError = pipelineStage === "ERROR";
   const isComplete = pipelineStage === "COMPLETE";
 
-  const runPipeline = useCallback(async (signal: AbortSignal) => {
-    if (isRunningRef.current) return;
-    isRunningRef.current = true;
-
-    setErrorMessage(null);
-    setPipelineStage("PREPARING");
-    setProgressPercent(0);
-
-    const totalPixels =
-      capturedImage && typeof capturedImage === "object" && "width" in capturedImage
-        ? capturedImage.width * capturedImage.height
-        : ANALYSIS_TELEMETRY.pixelsAnalysed;
-
-    try {
-      await analyzeHair(capturedImage, {
-        signal,
-        onProgress: (p: PipelineProgress) => {
-          if (signal.aborted) return;
-          setPipelineStage(p.stage);
-          setStageTextLabel(p.stageLabel);
-          setProgressPercent(p.progressPercent);
-          setElapsedMs(p.elapsedMs);
-          setPixels(Math.round(totalPixels * (p.progressPercent / 100)));
-        },
-      });
-
-      if (!signal.aborted) {
-        setTimeout(() => {
-          if (!signal.aborted) {
-            navigate({ to: "/results" });
-          }
-        }, 400);
+  const runPipeline = useCallback(
+    async (signal: AbortSignal) => {
+      // Prevent double-click retries. Note: we do NOT bail on remount because
+      // isRunningRef is always false at mount time (each mount gets a fresh ref).
+      if (isRunningRef.current) {
+        console.log("[MUDI UI] runPipeline called while already running — ignored");
+        return;
       }
-    } catch (err: any) {
-      if (signal.aborted) return;
-      console.error("[MUDI] Analysis pipeline interrupted:", err);
-      setPipelineStage("ERROR");
-      setErrorMessage(
-        err?.message || "Unable to analyze this image. Please try another image with better lighting.",
-      );
-    } finally {
-      isRunningRef.current = false;
-    }
-  }, [capturedImage, navigate]);
+      isRunningRef.current = true;
+
+      // Reset UI state for a fresh run
+      setErrorMessage(null);
+      setPipelineStage("PREPARING");
+      setStageTextLabel(STAGE_CONFIG["PREPARING"].label);
+      setProgressPercent(0);
+      setPixels(0);
+      setElapsedMs(0);
+
+      const totalPixels =
+        capturedImage && typeof capturedImage === "object" && "width" in capturedImage
+          ? capturedImage.width * capturedImage.height
+          : ANALYSIS_TELEMETRY.pixelsAnalysed;
+
+      try {
+        await analyzeHair(capturedImage, {
+          signal,
+          onProgress: (p: PipelineProgress) => {
+            // Guard: do not update state if this component's signal has been aborted.
+            // analyzeHair already suppresses callbacks for superseded runs — this
+            // is a second layer of protection for the React state specifically.
+            if (signal.aborted) return;
+
+            setPipelineStage(p.stage);
+            setStageTextLabel(p.stageLabel);
+            setProgressPercent(p.progressPercent);
+            setElapsedMs(p.elapsedMs);
+            setPixels(Math.round(totalPixels * (p.progressPercent / 100)));
+          },
+        });
+
+        if (!signal.aborted) {
+          // Brief pause so the user can see the COMPLETE state before navigating
+          setTimeout(() => {
+            if (!signal.aborted) {
+              navigate({ to: "/results" });
+            }
+          }, 400);
+        }
+      } catch (err: any) {
+        // If signal was aborted, the component is unmounting/retrying.
+        // Never update React state in this case — a new run is already starting
+        // (or the component is gone). Updating state here would freeze the UI
+        // on stale progress from the aborted run.
+        if (signal.aborted) {
+          console.log("[MUDI UI] runPipeline catch — signal aborted, skipping state update");
+          return;
+        }
+
+        // Real error — update UI to ERROR state
+        console.error("[MUDI UI] Analysis pipeline failed:", err?.message ?? err);
+        setPipelineStage("ERROR");
+        setStageTextLabel(STAGE_CONFIG["ERROR"].label);
+        setProgressPercent(0);
+        setErrorMessage(
+          err?.message || "Unable to analyze this image. Please try another image with better lighting.",
+        );
+      } finally {
+        // Always release the lock, even on abort. This ensures that a subsequent
+        // retry (new runPipeline call) can proceed without being blocked.
+        isRunningRef.current = false;
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [capturedImage, navigate],
+  );
 
   useEffect(() => {
+    // Abort any currently in-flight run before starting a new one.
+    // This handles React StrictMode double-invocation and TanStack preloading
+    // (defaultPreloadStaleTime: 0) where the effect may fire more than once.
+    if (abortControllerRef.current) {
+      console.log("[MUDI UI] useEffect — aborting previous controller before starting fresh run");
+      abortControllerRef.current.abort();
+    }
+
     const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    // isRunningRef is per-component-instance (useRef), so it is always false
+    // at this point (either first mount or after a prior run's finally block).
+    // We can call runPipeline unconditionally.
     runPipeline(controller.signal);
 
     return () => {
+      // Cleanup on unmount: abort the current run so its callbacks stop.
+      // runPipeline's catch block will detect signal.aborted and NOT update state.
+      console.log("[MUDI UI] useEffect cleanup — aborting controller");
       controller.abort();
+      abortControllerRef.current = null;
     };
-  }, []); // Run once on mount
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps — intentionally run once per mount
 
-  // Determine active stage index out of the sequential status messages based on progress
-  const stages = t.stages;
-  const activeStageIndex =
-    isComplete
-      ? stages.length - 1
-      : Math.min(stages.length - 1, Math.floor((progressPercent / 100) * stages.length));
+  // ─── Checklist derived from real STAGE_CONFIG (not the decorative list) ────
+  // Find the index of the current stage in PIPELINE_STAGE_ORDER
+  const currentStageOrderIndex = PIPELINE_STAGE_ORDER.indexOf(pipelineStage as any);
+  // If the stage is not in PIPELINE_STAGE_ORDER (e.g. IDLE/COMPLETE/ERROR), use -1
+  // so all stages before COMPLETE appear ticked when isComplete is true.
 
-  const currentStageObj = stages[activeStageIndex];
+  // ─────────────────────────────────────────────────────────────────────────────
 
   return (
     <div className="flex min-h-dvh flex-col bg-background">
@@ -167,7 +235,12 @@ function AnalysisPage() {
               <CensusButton
                 size="lg"
                 onClick={() => {
+                  // Abort the previous run (if somehow still running) before retrying
+                  if (abortControllerRef.current) {
+                    abortControllerRef.current.abort();
+                  }
                   const controller = new AbortController();
+                  abortControllerRef.current = controller;
                   runPipeline(controller.signal);
                 }}
               >
@@ -194,13 +267,19 @@ function AnalysisPage() {
             </div>
 
             <div className="min-w-0 flex flex-col justify-between gap-4">
+              {/*
+               * Pipeline checklist — sourced directly from PIPELINE_STAGE_ORDER / STAGE_CONFIG.
+               * Each item maps 1:1 with a real pipeline stage. The label shown is the exact
+               * label from STAGE_CONFIG, so it always accurately reflects what's happening.
+               */}
               <ol className="divide-y divide-border border border-border bg-paper max-h-72 overflow-y-auto">
-                {stages.map((stage, i) => {
-                  const isPast = activeStageIndex > i || isComplete;
-                  const isCurrent = activeStageIndex === i && !isComplete;
+                {PIPELINE_STAGE_ORDER.map((stage, i) => {
+                  const config = STAGE_CONFIG[stage];
+                  const isPast = isComplete || (currentStageOrderIndex > i && currentStageOrderIndex !== -1);
+                  const isCurrent = !isComplete && currentStageOrderIndex === i;
                   return (
                     <li
-                      key={stage.id}
+                      key={stage}
                       className={cn(
                         "flex items-center gap-3 px-3 py-2.5 transition-colors",
                         isCurrent && "bg-accent/50",
@@ -222,18 +301,20 @@ function AnalysisPage() {
                       <span
                         className={cn(
                           "min-w-0 font-mono text-[0.72rem] tracking-[0.1em] uppercase truncate",
-                          isPast || isCurrent ? "text-foreground font-semibold" : "text-muted-foreground",
+                          isPast || isCurrent
+                            ? "text-foreground font-semibold"
+                            : "text-muted-foreground",
                           lang === "ml" && "font-sans text-xs tracking-normal font-medium",
                         )}
                       >
-                        {stage.label}
+                        {config.label}
                       </span>
                     </li>
                   );
                 })}
               </ol>
 
-              {/* Fake rotating system telemetry */}
+              {/* System telemetry panel */}
               <div className="border border-border bg-paper p-3 text-[0.72rem] font-mono tracking-wider">
                 <div className="label-tech mb-2 text-primary">{t.systemTelemetry}</div>
                 <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-muted-foreground">
@@ -272,7 +353,7 @@ function AnalysisPage() {
                 <div className="px-3.5 py-2.5 flex items-center justify-between">
                   <dt className="label-tech">{t.segmentation}</dt>
                   <dd className="label-tech-ink font-semibold">
-                    {isComplete ? t.analysisComplete : stageTextLabel || currentStageObj?.label}
+                    {isComplete ? t.analysisComplete : stageTextLabel}
                   </dd>
                 </div>
               </dl>
