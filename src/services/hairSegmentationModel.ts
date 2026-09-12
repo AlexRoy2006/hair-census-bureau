@@ -35,7 +35,7 @@ export interface HairSegmentationResult {
   hairPixelCount: number;
   hairConfidence: number;
   allClassMasks: SegmentationClassMask[];
-  debugCanvasUrl?: string; // Developer-only verification overlay
+  debugCanvasUrl?: string | undefined; // Developer-only verification overlay
 }
 
 let segmenterPipeline: any = null;
