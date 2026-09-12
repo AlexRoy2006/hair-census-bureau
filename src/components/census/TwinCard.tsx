@@ -1,11 +1,13 @@
 import type { CensusResult } from "@/data/census";
 
 export function TwinCard({ twin }: { twin: CensusResult["twin"] }) {
+  const matchPercent = twin.matchScore ? `${twin.matchScore}%` : "87%";
+
   return (
     <section className="border border-border bg-paper">
       <div className="hairline-b flex items-center justify-between px-4 py-3">
         <h3 className="label-tech-ink">YOUR CENSUS TWIN</h3>
-        <span className="label-tech">MATCH MU-04</span>
+        <span className="label-tech num-tabular">MATCH: {matchPercent}</span>
       </div>
 
       <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-4 p-4 sm:p-5">
@@ -23,6 +25,9 @@ export function TwinCard({ twin }: { twin: CensusResult["twin"] }) {
 
         <div className="min-w-0">
           <div className="wordmark truncate text-2xl sm:text-3xl">{twin.name}</div>
+          {twin.franchise && (
+            <div className="label-tech text-muted-foreground mt-0.5">{twin.franchise}</div>
+          )}
           <div className="mt-1.5 inline-block border border-hairline bg-accent/60 px-2 py-1">
             <span className="label-tech-ink">{twin.association}</span>
           </div>

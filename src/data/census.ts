@@ -71,6 +71,8 @@ export type CensusResult = {
     name: string;
     association: string;
     note: string;
+    franchise?: string;
+    matchScore?: number;
   };
   telemetry: {
     pixelsAnalysed: number;
@@ -99,6 +101,8 @@ export const MOCK_RESULT: CensusResult = {
     name: "SAITAMA",
     association: "LOW-FOLLICLE ASSOCIATION",
     note: "Matched using hair-density classification only. This is not facial recognition.",
+    franchise: "One-Punch Man",
+    matchScore: 87,
   },
   telemetry: {
     pixelsAnalysed: 1_482_912,
