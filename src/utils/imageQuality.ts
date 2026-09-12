@@ -65,9 +65,9 @@ export function validateImageQuality(
 
   for (let i = 0; i < totalPixels; i++) {
     const p = i * 4;
-    const r = pixels[p];
-    const g = pixels[p + 1];
-    const b = pixels[p + 2];
+    const r = pixels[p]!;
+    const g = pixels[p + 1]!;
+    const b = pixels[p + 2]!;
 
     const lum = 0.299 * r + 0.587 * g + 0.114 * b;
     gray[i] = lum;
@@ -101,11 +101,11 @@ export function validateImageQuality(
       const idx = y * width + x;
       // 3x3 Laplacian operator: [0, 1, 0; 1, -4, 1; 0, 1, 0]
       const lap =
-        gray[idx - width] +
-        gray[idx - 1] +
-        gray[idx + 1] +
-        gray[idx + width] -
-        4 * gray[idx];
+        gray[idx - width]! +
+        gray[idx - 1]! +
+        gray[idx + 1]! +
+        gray[idx + width]! -
+        4 * gray[idx]!;
 
       laplacianSum += lap;
       laplacianSqSum += lap * lap;

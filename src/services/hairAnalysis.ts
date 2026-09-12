@@ -427,7 +427,7 @@ export async function analyzeHair(
     emit("FINALIZING");
 
     const now = new Date();
-    const dateStr = now.toISOString().split("T")[0];
+    const dateStr = now.toISOString().split("T")[0] ?? "";
     const censusNumber = getDeterministicCensusNumber(prepared.dataUrl);
 
     const result: CensusResult = {
