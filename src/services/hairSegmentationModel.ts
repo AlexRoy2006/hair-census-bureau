@@ -35,7 +35,7 @@ export interface HairSegmentationResult {
   hairPixelCount: number;
   hairConfidence: number;
   allClassMasks: SegmentationClassMask[];
-  debugCanvasUrl?: string; // Developer-only verification overlay
+  debugCanvasUrl?: string | undefined; // Developer-only verification overlay
 }
 
 let segmenterPipeline: any = null;
@@ -122,9 +122,9 @@ function createLocalCVSegmenter() {
       for (let x = 0; x < w; x++) {
         const i = y * w + x;
         const p = i * 4;
-        const r = pixels[p];
-        const g = pixels[p + 1];
-        const b = pixels[p + 2];
+        const r = pixels[p]!;
+        const g = pixels[p + 1]!;
+        const b = pixels[p + 2]!;
 
         const Y = 0.299 * r + 0.587 * g + 0.114 * b;
         const Cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
@@ -206,9 +206,9 @@ function createLocalCVSegmenter() {
         for (let x = Math.max(0, skinMinX - 15); x <= Math.min(w - 1, skinMaxX + 15); x++) {
           const i = y * w + x;
           const p = i * 4;
-          const r = pixels[p];
-          const g = pixels[p + 1];
-          const b = pixels[p + 2];
+          const r = pixels[p]!;
+          const g = pixels[p + 1]!;
+          const b = pixels[p + 2]!;
 
           const lum = 0.299 * r + 0.587 * g + 0.114 * b;
           const isSkinPixel = skinMask[i] === 255;

@@ -13,13 +13,13 @@ export function ScanVisualization({
   isCameraActive = false,
   isFrontCamera = true,
 }: {
-  scanning?: boolean;
-  labels?: boolean;
-  className?: string;
-  videoRef?: React.RefObject<HTMLVideoElement | null>;
-  previewUrl?: string | null;
-  isCameraActive?: boolean;
-  isFrontCamera?: boolean;
+  scanning?: boolean | undefined;
+  labels?: boolean | undefined;
+  className?: string | undefined;
+  videoRef?: React.RefObject<HTMLVideoElement | null> | undefined;
+  previewUrl?: string | null | undefined;
+  isCameraActive?: boolean | undefined;
+  isFrontCamera?: boolean | undefined;
 }) {
   const hasMedia = Boolean(isCameraActive || previewUrl);
 

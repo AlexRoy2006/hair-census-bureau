@@ -104,7 +104,7 @@ export function extractHeadRegion(
         const my = Math.min(maskH - 1, Math.floor((y / imageHeight) * maskH));
         const mIdx = my * maskW + mx;
 
-        if (m[mIdx] > 0) {
+        if (m[mIdx]! > 0) {
           if (headMask[idx] === 0) {
             headMask[idx] = 1;
             featurePixelCount++;
