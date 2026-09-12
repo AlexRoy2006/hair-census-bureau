@@ -6,6 +6,7 @@ import {
 } from "@/data/census";
 import { type ProcessedImage, getImageFingerprint } from "./imageProcessor";
 import { analyzeHairWithGemini, type GeminiAnalysisResponse } from "./geminiServerFn";
+import { findCensusTwin } from "@/data/censusTwins";
 
 let activeCapturedImage: ProcessedImage | Blob | string | null = null;
 let activeAnalysisResult: CensusResult | null = null;
@@ -184,6 +185,10 @@ export async function analyzeHair(
   // Compute transparent deterministic population estimate
   const { hairPopulation, populationMargin } = estimateHairPopulation(coverage, confidence, analysisId);
 
+  // Calculate dynamic census twin matching using census metrics
+  const censusNumber = `MU-2026-${Math.floor(10000 + Math.random() * 90000)}`;
+  const twin = findCensusTwin(coverage, confidence, censusNumber);
+
   let classification: Classification = "DRY LAND";
   if (coverage > 80) classification = "DENSE FOREST";
   else if (coverage > 60) classification = "WOODLAND";
@@ -196,7 +201,7 @@ export async function analyzeHair(
 
   const finalResult: CensusResult = {
     ...MOCK_RESULT,
-    censusNumber: `MU-2026-${Math.floor(10000 + Math.random() * 90000)}`,
+    censusNumber,
     issuedAt: todayStr,
     hairPopulation,
     populationMargin,
@@ -209,6 +214,7 @@ export async function analyzeHair(
     verdict: geminiRes.headDetected
       ? `Head detected. ${geminiRes.notes}`
       : "No distinct head/scalp structure identified.",
+    twin,
   };
 
   setLatestResult(finalResult);
