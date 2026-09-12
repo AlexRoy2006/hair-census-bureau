@@ -6,7 +6,7 @@ import {
 } from "@/data/census";
 import { type ProcessedImage, getImageFingerprint } from "./imageProcessor";
 import { analyzeHairWithGemini, type GeminiAnalysisResponse } from "./geminiServerFn";
-import { findCensusTwin } from "@/data/censusTwins";
+import { findCensusTwin } from "@/services/censusTwinMatcher";
 
 let activeCapturedImage: ProcessedImage | Blob | string | null = null;
 let activeAnalysisResult: CensusResult | null = null;

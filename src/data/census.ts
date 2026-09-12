@@ -68,11 +68,14 @@ export type CensusResult = {
   classificationNote: string;
   verdict: string;
   twin: {
+    id?: string;
     name: string;
     association: string;
     note: string;
     franchise?: string;
+    image?: string;
     matchScore?: number;
+    targetHairCoverage?: number;
   };
   telemetry: {
     pixelsAnalysed: number;

@@ -109,7 +109,11 @@ function ResultsPage() {
         </div>
 
         <div className="mt-6">
-          <TwinCard twin={result.twin} />
+          <TwinCard
+            twin={result.twin}
+            hairCoverage={result.hairCoverage}
+            scalpExposure={result.scalpExposure}
+          />
         </div>
 
         <div className="mt-6">
