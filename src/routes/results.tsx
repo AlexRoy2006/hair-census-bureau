@@ -40,7 +40,29 @@ function ResultsPage() {
   const result = getLatestResult();
   const [disputeOpen, setDisputeOpen] = useState(false);
   const [certOpen, setCertOpen] = useState(false);
-  const population = useCountUp(result.hairPopulation, 1700, 300);
+  const population = useCountUp(result?.hairPopulation ?? 0, 1700, 300);
+
+  if (!result) {
+    return (
+      <div className="flex min-h-dvh flex-col bg-background">
+        <SiteHeader context="NO CENSUS ON RECORD" />
+        <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col items-center justify-center gap-6 px-4 py-16 text-center">
+          <h1 className="wordmark text-3xl sm:text-5xl">NO CENSUS ON RECORD</h1>
+          <p className="max-w-prose text-sm leading-relaxed text-foreground/80">
+            The department has no completed hair census for this session. Please submit an image
+            for analysis.
+          </p>
+          <CensusButton asChild size="lg">
+            <Link to="/camera">
+              BEGIN CENSUS <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+          </CensusButton>
+        </main>
+        <SiteFooter />
+      </div>
+    );
+  }
+
 
   return (
     <div className="flex min-h-dvh flex-col bg-background">
