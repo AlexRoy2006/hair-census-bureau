@@ -44,6 +44,7 @@ function CameraPage() {
   const [cameraState, setCameraState] = useState<CameraState>("initializing");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isFrontCamera, setIsFrontCamera] = useState(true);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -79,7 +80,6 @@ function CameraPage() {
     let frontFacing = true;
 
     try {
-      // 1. Try front-facing camera on mobile / selfie mode
       stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: "user" },
@@ -91,7 +91,6 @@ function CameraPage() {
     } catch (err1) {
       console.warn("Front camera unavailable, attempting default camera fallback:", err1);
       try {
-        // 2. Fallback to any available camera
         stream = await navigator.mediaDevices.getUserMedia({
           video: true,
           audio: false,
@@ -128,7 +127,6 @@ function CameraPage() {
     }
   }, [stopCamera]);
 
-  // Handle mounting and checking existing captured image
   useEffect(() => {
     const existing = getCapturedImage();
     if (existing && typeof existing === "object" && "dataUrl" in existing) {
@@ -144,7 +142,6 @@ function CameraPage() {
     };
   }, [startCamera, stopCamera]);
 
-  // Keep videoRef connected when camera becomes active
   useEffect(() => {
     if (cameraState === "active" && streamRef.current && videoRef.current) {
       if (videoRef.current.srcObject !== streamRef.current) {
@@ -154,7 +151,6 @@ function CameraPage() {
     }
   }, [cameraState]);
 
-  // Capture video frame onto canvas
   const handleCapture = async () => {
     if (!videoRef.current || cameraState !== "active") return;
 
@@ -170,15 +166,14 @@ function CameraPage() {
     }
   };
 
-  // Restart camera for retake
   const handleRetake = () => {
     clearCapturedImage();
     setPreviewUrl(null);
     setCaptured(false);
+    setIsAnalyzing(false);
     startCamera();
   };
 
-  // Upload fallback image selection
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -195,8 +190,9 @@ function CameraPage() {
     }
   };
 
-  // Navigate to analysis flow
   const handleAnalyze = () => {
+    if (isAnalyzing) return;
+    setIsAnalyzing(true);
     stopCamera();
     navigate({ to: "/analysis" });
   };
@@ -220,7 +216,6 @@ function CameraPage() {
             : "Place your head inside the designated area."}
         </p>
 
-        {/* Camera or preview viewport frame */}
         <div className="mt-6">
           <CameraFrame
             captured={captured}
@@ -231,7 +226,6 @@ function CameraPage() {
           />
         </div>
 
-        {/* Permissions & Errors Notification Banner */}
         {cameraState !== "active" && cameraState !== "off" && !captured && (
           <div className="mt-4 border border-destructive/40 bg-paper p-4 text-left">
             <div className="flex items-center gap-2 text-destructive">
@@ -272,11 +266,11 @@ function CameraPage() {
             </div>
 
             <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-              <CensusButton variant="outline" size="lg" onClick={handleRetake}>
+              <CensusButton variant="outline" size="lg" onClick={handleRetake} disabled={isAnalyzing}>
                 RETAKE
               </CensusButton>
-              <CensusButton size="lg" onClick={handleAnalyze}>
-                ANALYZE <ArrowRight className="h-3.5 w-3.5" />
+              <CensusButton size="lg" onClick={handleAnalyze} disabled={isAnalyzing}>
+                {isAnalyzing ? "SUBMITTING..." : "ANALYZE"} <ArrowRight className="h-3.5 w-3.5" />
               </CensusButton>
             </div>
           </div>

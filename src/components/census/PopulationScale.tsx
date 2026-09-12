@@ -1,17 +1,13 @@
 import { CLASSIFICATION_SCALE, type Classification } from "@/data/census";
 import { cn } from "@/lib/utils";
-import { useLanguage } from "@/utils/language";
-import { CENSUS_MESSAGES } from "@/config/censusMessages";
 
 export function PopulationScale({ active }: { active: Classification }) {
-  const [lang] = useLanguage();
-  const t = CENSUS_MESSAGES[lang];
   const activeIndex = CLASSIFICATION_SCALE.indexOf(active);
 
   return (
     <section className="border border-border bg-paper">
       <div className="hairline-b flex items-center justify-between px-4 py-3">
-        <h3 className="label-tech-ink">{t.hairPopulationStatusLabel}</h3>
+        <h3 className="label-tech-ink">HAIR POPULATION STATUS</h3>
         <span className="label-tech">SCALE MU-06</span>
       </div>
 
@@ -31,7 +27,6 @@ export function PopulationScale({ active }: { active: Classification }) {
         <ol className="mt-3 grid grid-cols-2 gap-px bg-border sm:grid-cols-3 lg:grid-cols-6">
           {CLASSIFICATION_SCALE.map((step, i) => {
             const isActive = step === active;
-            const translatedLabel = t.classifications[step]?.label || step;
             return (
               <li
                 key={step}
@@ -47,10 +42,9 @@ export function PopulationScale({ active }: { active: Classification }) {
                   className={cn(
                     "mt-1 font-mono text-[0.68rem] tracking-[0.1em] break-words uppercase",
                     isActive ? "font-semibold text-primary-foreground" : "text-foreground",
-                    lang === "ml" && "font-sans text-xs tracking-normal font-medium",
                   )}
                 >
-                  {translatedLabel}
+                  {step}
                 </div>
               </li>
             );

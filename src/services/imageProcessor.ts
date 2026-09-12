@@ -1,94 +1,84 @@
 /**
- * LOCAL BROWSER IMAGE PREPROCESSING SERVICE
+ * IMAGE PROCESSING SERVICE
  * -----------------------------------------------------------------------------
- * All image operations happen 100% locally in the browser memory. No images
- * are ever uploaded to any external server or API.
+ * Reusable utility for handling, resizing, and normalizing captured or uploaded
+ * images for the hair census computer-vision pipeline.
  */
 
-export interface PreparedImage {
-  canvas: HTMLCanvasElement;
+export interface ProcessedImage {
   blob: Blob;
   dataUrl: string;
   width: number;
   height: number;
-  aspectRatio: number;
   sizeBytes: number;
+  fingerprint: string;
 }
 
-export interface PrepareOptions {
+export interface ProcessOptions {
   maxWidth?: number;
   maxHeight?: number;
   quality?: number;
   mimeType?: string;
 }
 
-const DEFAULT_PREPARE_OPTIONS: PrepareOptions = {
+const DEFAULT_OPTIONS: ProcessOptions = {
   maxWidth: 1920,
   maxHeight: 1920,
-  quality: 0.92,
+  quality: 0.9,
   mimeType: "image/jpeg",
 };
 
-// Safety timeout for image decode operations (ms).
-// Covers mobile browsers that silently fail to fire onload/onerror
-// for HEIC, unusual MediaStream colour profiles, or very large blobs.
-const IMAGE_DECODE_TIMEOUT_MS = 6000;
-const BLOB_EXPORT_TIMEOUT_MS = 5000;
-
 /**
- * Reusable image preprocessing function suitable for local model inference.
- * Accepts File, Blob, HTMLImageElement, HTMLVideoElement, HTMLCanvasElement, PreparedImage, or dataUrl string.
+ * Generate a non-secret deterministic image fingerprint.
  */
-export async function prepareImage(
-  image?: HTMLVideoElement | HTMLCanvasElement | HTMLImageElement | Blob | File | string | PreparedImage | any,
-  options: PrepareOptions = {},
-): Promise<PreparedImage> {
-  const opts = { ...DEFAULT_PREPARE_OPTIONS, ...options };
+export function getImageFingerprint(base64Str: string): string {
+  if (!base64Str) return "FP-EMPTY";
+  const clean = base64Str.replace(/^data:image\/\w+;base64,/, "");
+  let hash = 0;
+  const len = clean.length;
+  const step = Math.max(1, Math.floor(len / 128));
 
-  try {
-    let sourceCanvas: HTMLCanvasElement;
-
-    if (!image) {
-      throw new Error("No image provided for processing");
-    } else if (typeof image === "object" && "canvas" in image && image.canvas instanceof HTMLCanvasElement) {
-      // Already a PreparedImage object with canvas — use directly, no decode needed
-      sourceCanvas = image.canvas;
-    } else if (typeof image === "object" && "dataUrl" in image && typeof image.dataUrl === "string") {
-      sourceCanvas = await dataUrlToCanvas(image.dataUrl);
-    } else if (typeof image === "object" && "blob" in image && image.blob instanceof Blob) {
-      sourceCanvas = await blobToCanvas(image.blob);
-    } else if (typeof image === "string") {
-      sourceCanvas = await dataUrlToCanvas(image);
-    } else if (typeof window !== "undefined" && image instanceof HTMLVideoElement) {
-      sourceCanvas = videoToCanvas(image);
-    } else if (typeof window !== "undefined" && image instanceof HTMLCanvasElement) {
-      sourceCanvas = image;
-    } else if (typeof window !== "undefined" && image instanceof HTMLImageElement) {
-      sourceCanvas = imageToCanvas(image);
-    } else if (typeof window !== "undefined" && (image instanceof Blob || image instanceof File)) {
-      sourceCanvas = await blobToCanvas(image);
-    } else {
-      throw new Error("Unsupported image format provided");
-    }
-
-    return await resizeAndNormalizeCanvas(sourceCanvas, opts);
-  } catch (err: any) {
-    console.error("[MUDI PREPARE] Image preprocessing error:", err?.message ?? err);
-    throw err;
+  for (let i = 0; i < len; i += step) {
+    hash = ((hash << 5) - hash + clean.charCodeAt(i)) | 0;
   }
+
+  const sample =
+    clean.substring(0, 4) +
+    clean.substring(Math.floor(len / 2), Math.floor(len / 2) + 4) +
+    clean.substring(Math.max(0, len - 4));
+
+  return `FP-${len}-${(hash >>> 0).toString(16).toUpperCase()}-${sample}`;
 }
 
 /**
- * Alias wrapper for backward compatibility with capture pipeline.
+ * Process a video frame, canvas, blob, or file into a normalized image blob & dataUrl.
  */
 export async function processCapturedImage(
-  source: HTMLVideoElement | HTMLCanvasElement | Blob | File | string | PreparedImage | any,
-  options: PrepareOptions = {},
-) {
-  return prepareImage(source, options);
+  source: HTMLVideoElement | HTMLCanvasElement | Blob | File | string,
+  options: ProcessOptions = {},
+): Promise<ProcessedImage> {
+  const opts = { ...DEFAULT_OPTIONS, ...options };
+
+  if (typeof source === "string") {
+    return processDataUrl(source, opts);
+  }
+
+  if (typeof HTMLVideoElement !== "undefined" && source instanceof HTMLVideoElement) {
+    return processVideoFrame(source, opts);
+  }
+
+  if (typeof HTMLCanvasElement !== "undefined" && source instanceof HTMLCanvasElement) {
+    return processCanvas(source, opts);
+  }
+
+  if (typeof Blob !== "undefined" && source instanceof Blob) {
+    return processBlob(source, opts);
+  }
+
+  throw new Error("Unsupported image source provided to imageProcessor");
 }
 
-function videoToCanvas(video: HTMLVideoElement): HTMLCanvasElement {
+function processVideoFrame(video: HTMLVideoElement, opts: ProcessOptions): Promise<ProcessedImage> {
   const width = video.videoWidth || 640;
   const height = video.videoHeight || 480;
 
@@ -97,132 +87,78 @@ function videoToCanvas(video: HTMLVideoElement): HTMLCanvasElement {
   canvas.height = height;
 
   const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Could not initialize 2D canvas context for video frame");
+  if (!ctx) {
+    throw new Error("Could not create canvas 2D context");
+  }
 
   ctx.drawImage(video, 0, 0, width, height);
-  return canvas;
+  return processCanvas(canvas, opts);
 }
 
-function imageToCanvas(img: HTMLImageElement): HTMLCanvasElement {
-  const canvas = document.createElement("canvas");
-  canvas.width = img.naturalWidth || img.width;
-  canvas.height = img.naturalHeight || img.height;
-
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Could not initialize 2D canvas context for HTMLImageElement");
-
-  ctx.drawImage(img, 0, 0);
-  return canvas;
-}
-
-/**
- * Decode a Blob/File into an HTMLCanvasElement.
- * Includes a hard timeout so that mobile browsers that silently drop
- * onload/onerror events (HEIC, unusual colour profiles, very large blobs)
- * never hang the pipeline indefinitely.
- */
-function blobToCanvas(blob: Blob): Promise<HTMLCanvasElement> {
+function processBlob(blob: Blob, opts: ProcessOptions): Promise<ProcessedImage> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(blob);
-    let settled = false;
 
-    const cleanup = () => {
-      settled = true;
+    img.onload = async () => {
       URL.revokeObjectURL(url);
-    };
-
-    // Safety net: reject explicitly if neither onload nor onerror fires
-    const timer = setTimeout(() => {
-      if (!settled) {
-        cleanup();
-        reject(new Error(
-          `[MUDI PREPARE] Image decode timed out after ${IMAGE_DECODE_TIMEOUT_MS}ms ` +
-          `(blob type: ${blob.type || "unknown"}, size: ${blob.size}b). ` +
-          "The image format may be unsupported by this browser."
-        ));
-      }
-    }, IMAGE_DECODE_TIMEOUT_MS);
-
-    img.onload = () => {
-      if (settled) return;
-      clearTimeout(timer);
-      cleanup();
       try {
-        resolve(imageToCanvas(img));
+        const canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          throw new Error("Could not create canvas 2D context");
+        }
+        ctx.drawImage(img, 0, 0);
+
+        const result = await processCanvas(canvas, opts);
+        resolve(result);
       } catch (err) {
         reject(err);
       }
     };
 
     img.onerror = () => {
-      if (settled) return;
-      clearTimeout(timer);
-      cleanup();
-      reject(new Error("Unable to decode image file/blob — unsupported format or corrupted data"));
+      URL.revokeObjectURL(url);
+      reject(new Error("Failed to load image blob into Image element"));
     };
 
     img.src = url;
   });
 }
 
-/**
- * Decode a data URL string into an HTMLCanvasElement.
- * Includes the same hard timeout safety net as blobToCanvas.
- */
-function dataUrlToCanvas(dataUrl: string): Promise<HTMLCanvasElement> {
+function processDataUrl(dataUrl: string, opts: ProcessOptions): Promise<ProcessedImage> {
   return new Promise((resolve, reject) => {
-    if (!dataUrl || typeof dataUrl !== "string") {
-      return reject(new Error("Invalid or empty data URL provided"));
-    }
-
     const img = new Image();
-    let settled = false;
-
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        reject(new Error(
-          `[MUDI PREPARE] Data URL decode timed out after ${IMAGE_DECODE_TIMEOUT_MS}ms. ` +
-          "The image may be corrupt or the browser is overloaded."
-        ));
-      }
-    }, IMAGE_DECODE_TIMEOUT_MS);
-
-    img.onload = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
+    img.onload = async () => {
       try {
-        resolve(imageToCanvas(img));
+        const canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          throw new Error("Could not create canvas 2D context");
+        }
+        ctx.drawImage(img, 0, 0);
+
+        const result = await processCanvas(canvas, opts);
+        resolve(result);
       } catch (err) {
         reject(err);
       }
     };
-
-    img.onerror = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(new Error("Invalid or corrupted data URL — cannot decode image"));
-    };
-
+    img.onerror = () => reject(new Error("Failed to load data URL"));
     img.src = dataUrl;
   });
 }
 
-/**
- * Resize and normalise a source canvas into the final PreparedImage output.
- * toBlob() callback is guarded by a hard timeout to prevent silent hangs
- * on browsers with slow/broken canvas serialisation.
- */
-function resizeAndNormalizeCanvas(
-  sourceCanvas: HTMLCanvasElement,
-  opts: PrepareOptions,
-): Promise<PreparedImage> {
+function processCanvas(canvas: HTMLCanvasElement, opts: ProcessOptions): Promise<ProcessedImage> {
   return new Promise((resolve, reject) => {
-    let targetWidth = sourceCanvas.width;
-    let targetHeight = sourceCanvas.height;
+    let targetWidth = canvas.width;
+    let targetHeight = canvas.height;
 
     const maxW = opts.maxWidth || 1920;
     const maxH = opts.maxHeight || 1920;
@@ -239,46 +175,31 @@ function resizeAndNormalizeCanvas(
 
     const ctx = outputCanvas.getContext("2d");
     if (!ctx) {
-      return reject(new Error("Could not initialize 2D output canvas context"));
+      return reject(new Error("Could not create canvas context for output"));
     }
 
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(sourceCanvas, 0, 0, sourceCanvas.width, sourceCanvas.height, 0, 0, targetWidth, targetHeight);
+    ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, targetWidth, targetHeight);
 
     const mimeType = opts.mimeType || "image/jpeg";
-    const quality = opts.quality ?? 0.92;
-
-    let blobSettled = false;
-
-    // Safety net: toBlob() can silently never call its callback on some browsers
-    const blobTimer = setTimeout(() => {
-      if (!blobSettled) {
-        blobSettled = true;
-        reject(new Error(
-          `[MUDI PREPARE] Canvas toBlob() timed out after ${BLOB_EXPORT_TIMEOUT_MS}ms`
-        ));
-      }
-    }, BLOB_EXPORT_TIMEOUT_MS);
+    const quality = opts.quality ?? 0.9;
 
     outputCanvas.toBlob(
       (blob) => {
-        if (blobSettled) return;
-        blobSettled = true;
-        clearTimeout(blobTimer);
-
         if (!blob) {
-          return reject(new Error("Failed to export processed canvas to Blob"));
+          return reject(new Error("Failed to generate image blob from canvas"));
         }
         const dataUrl = outputCanvas.toDataURL(mimeType, quality);
+        const fingerprint = getImageFingerprint(dataUrl);
+
         resolve({
-          canvas: outputCanvas,
           blob,
           dataUrl,
           width: targetWidth,
           height: targetHeight,
-          aspectRatio: targetWidth / (targetHeight || 1),
           sizeBytes: blob.size,
+          fingerprint,
         });
       },
       mimeType,

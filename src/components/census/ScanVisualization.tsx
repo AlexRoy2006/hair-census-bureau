@@ -16,8 +16,8 @@ export function ScanVisualization({
   scanning?: boolean;
   labels?: boolean;
   className?: string;
-  videoRef?: React.RefObject<HTMLVideoElement | null>;
-  previewUrl?: string | null;
+  videoRef?: React.RefObject<HTMLVideoElement | null> | undefined;
+  previewUrl?: string | null | undefined;
   isCameraActive?: boolean;
   isFrontCamera?: boolean;
 }) {

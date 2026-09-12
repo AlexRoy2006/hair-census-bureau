@@ -1,20 +1,10 @@
 import type { CensusResult } from "@/data/census";
-import { useLanguage } from "@/utils/language";
-import { CENSUS_MESSAGES } from "@/config/censusMessages";
 
 export function ClassificationCard({ result }: { result: CensusResult }) {
-  const [lang] = useLanguage();
-  const t = CENSUS_MESSAGES[lang];
-
-  const classData = t.classifications[result.classification] || {
-    label: result.classification,
-    status: result.populationStatus,
-  };
-
   return (
     <section className="animate-rise border border-primary/35 bg-accent/40">
       <div className="flex items-center justify-between border-b border-primary/25 px-4 py-3">
-        <h3 className="label-tech-ink">{t.censusClassification}</h3>
+        <h3 className="label-tech-ink">CENSUS CLASSIFICATION</h3>
         <span className="label-tech">TIER 06 / 06</span>
       </div>
 
@@ -24,12 +14,12 @@ export function ClassificationCard({ result }: { result: CensusResult }) {
             {result.classificationGlyph}
           </span>
           <span className="wordmark text-3xl break-words sm:text-5xl">
-            {classData.label}
+            {result.classification}
           </span>
         </div>
 
         <div className="mt-4 inline-block border border-primary bg-primary px-3 py-1.5">
-          <span className="label-tech text-primary-foreground font-semibold">{classData.status}</span>
+          <span className="label-tech text-primary-foreground">{result.populationStatus}</span>
         </div>
 
         <p className="mt-4 max-w-prose text-sm leading-relaxed text-foreground/80">

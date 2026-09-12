@@ -13,9 +13,7 @@ import { CensusCertificate } from "@/components/census/CensusCertificate";
 import { DisputeModal } from "@/components/census/DisputeModal";
 import { MetaStrip } from "@/components/census/MetaStrip";
 import { useCountUp } from "@/components/census/useCountUp";
-import { getLatestResult } from "@/services/hairAnalysis";
-import { useLanguage } from "@/utils/language";
-import { CENSUS_MESSAGES } from "@/config/censusMessages";
+import { getLatestResult, clearCapturedImage } from "@/services/hairAnalysis";
 
 export const Route = createFileRoute("/results")({
   head: () => ({
@@ -40,20 +38,17 @@ export const Route = createFileRoute("/results")({
 
 function ResultsPage() {
   const result = getLatestResult();
-  const [lang] = useLanguage();
-  const t = CENSUS_MESSAGES[lang];
-
   const [disputeOpen, setDisputeOpen] = useState(false);
   const [certOpen, setCertOpen] = useState(false);
   const population = useCountUp(result.hairPopulation, 1700, 300);
 
   return (
     <div className="flex min-h-dvh flex-col bg-background">
-      <SiteHeader context={`${t.report} ${result.censusNumber}`} />
+      <SiteHeader context={`REPORT ${result.censusNumber}`} />
 
       <main className="mx-auto w-full max-w-4xl flex-1 px-4 py-6 sm:px-6 sm:py-8">
         <div className="animate-rise hairline-b flex items-center justify-between pb-3">
-          <span className="label-tech-ink">{t.censusComplete}</span>
+          <span className="label-tech-ink">CENSUS COMPLETE</span>
           <span className="label-tech num-tabular">{result.issuedAt}</span>
         </div>
 
@@ -65,26 +60,26 @@ function ResultsPage() {
           </div>
 
           <div className="mt-6 border border-hairline bg-paper p-5 sm:p-7">
-            <div className="label-tech">{t.hairPopulation}</div>
+            <div className="label-tech">HAIR POPULATION</div>
             <div className="wordmark num-tabular mt-3 text-5xl leading-none sm:text-7xl">
               {population.toLocaleString("en-US")}
             </div>
             <div className="label-tech mt-3">
-              {t.estimated} {result.populationMargin.toLocaleString("en-US")}
+              ESTIMATED ± {result.populationMargin.toLocaleString("en-US")}
             </div>
           </div>
         </section>
 
         {/* statistics */}
         <section className="mt-6 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-          <StatCard label={t.hairCoverage} value={`${result.hairCoverage}%`} index={0} />
-          <StatCard label={t.scalpExposure} value={`${result.scalpExposure}%`} index={1} />
-          <StatCard label={t.baldnessIndex} value={`${result.baldnessIndex}`} index={2} />
-          <StatCard label={t.confidence} value={`${result.confidence}%`} index={3} />
+          <StatCard label="HAIR COVERAGE" value={`${result.hairCoverage}%`} index={0} />
+          <StatCard label="SCALP EXPOSURE" value={`${result.scalpExposure}%`} index={1} />
+          <StatCard label="BALDNESS INDEX" value={`${result.baldnessIndex}`} index={2} />
+          <StatCard label="CONFIDENCE" value={`${result.confidence}%`} index={3} />
         </section>
 
         <p className="label-tech mt-3">
-          {t.experimentalNote}
+          ALL METRICS ARE EXPERIMENTAL ESTIMATES PRODUCED BY AN UNVERIFIED VISION PIPELINE.
         </p>
 
         <div className="mt-6">
@@ -102,35 +97,27 @@ function ResultsPage() {
         {/* verdict */}
         <section className="mt-6 border border-border bg-paper">
           <div className="hairline-b flex items-center justify-between px-4 py-3">
-            <h3 className="label-tech-ink">{t.finalVerdict}</h3>
-            <span className="label-tech">{t.docMu07}</span>
+            <h3 className="label-tech-ink">FINAL VERDICT</h3>
+            <span className="label-tech">DOC MU-07</span>
           </div>
           <div className="p-5 sm:p-7">
-            <p className="wordmark text-xl sm:text-2xl">
-              {result.hairCoverage >= 20 ? "HAIR DETECTED." : "SPARSE HAIR DETECTED."}
-            </p>
+            <p className="wordmark text-xl sm:text-2xl">HAIR DETECTED.</p>
             <p className="mt-4 max-w-prose text-sm leading-relaxed text-foreground/80">
-              {result.hairCoverage >= 20 ? t.verdictHairDetected : t.verdictSparseDetected}
+              The census department confirms that the subject currently possesses a statistically
+              significant quantity of hair.
             </p>
             <div className="hairline-t mt-6 grid gap-2 pt-4 sm:grid-cols-2">
-              <span className="label-tech">{t.certifiedBy}</span>
+              <span className="label-tech">CERTIFIED BY: CENSUS DIVISION</span>
               <span className="label-tech sm:text-right">REF {result.censusNumber}</span>
             </div>
           </div>
         </section>
 
-        {/* Official Subtle Disclaimer */}
-        <div className="mt-6 border border-hairline bg-paper/60 p-3.5 text-center">
-          <p className="text-xs leading-relaxed text-muted-foreground font-mono">
-            {t.disclaimer}
-          </p>
-        </div>
-
         {/* actions */}
         <section className="mt-6 flex flex-col gap-3">
           <CensusButton asChild size="lg" className="w-full">
-            <Link to="/camera">
-              {t.takeAnotherCensus} <ArrowRight className="h-3.5 w-3.5" />
+            <Link to="/camera" onClick={() => clearCapturedImage()}>
+              TAKE ANOTHER CENSUS <ArrowRight className="h-3.5 w-3.5" />
             </Link>
           </CensusButton>
           <div className="flex flex-col gap-3 sm:flex-row">
@@ -140,7 +127,7 @@ function ResultsPage() {
               className="w-full sm:flex-1"
               onClick={() => setCertOpen(true)}
             >
-              <FileText className="h-3.5 w-3.5" /> {t.generateCertificate}
+              <FileText className="h-3.5 w-3.5" /> GENERATE CENSUS CERTIFICATE
             </CensusButton>
             <CensusButton
               variant="danger"
@@ -148,7 +135,7 @@ function ResultsPage() {
               className="w-full sm:flex-1"
               onClick={() => setDisputeOpen(true)}
             >
-              {t.disputeCensus}
+              DISPUTE THIS CENSUS
             </CensusButton>
           </div>
         </section>
